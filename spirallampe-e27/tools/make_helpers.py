@@ -61,12 +61,16 @@ def write_stl(path, tris, header):
 
 # (file, object half-height, plate z from, plate z to, radius, comment)
 PARTS = [
-    ("enforcer_shade.stl",       100.00,  0.0, 25.0, 34.0,
-     "support enforcer: shade bore under the ledge"),
-    ("enforcer_ring.stl",         14.95,  2.4, 27.8, 31.0,
-     "support enforcer: ring C bore under the socket lip"),
-    ("modifier_shade_ledge.stl", 100.00, 24.4, 29.2, 40.0,
-     "modifier: solid infill zone around the clamping ledge"),
+    # The shade's ledge starts at plate z 25.000 and ring C's lip at 27.900.
+    # Each enforcer runs a little past its ledge: no support can be generated
+    # inside solid model anyway, and overshooting guarantees the column
+    # reaches the underside.
+    ("enforcer_shade.stl",       100.00,  0.0, 26.0, 34.0,
+     "support enforcer: shade bore under the ledge at z 25.0"),
+    ("enforcer_ring.stl",         14.95,  2.4, 28.5, 31.0,
+     "support enforcer: ring C bore under the lip at z 27.9"),
+    ("modifier_shade_ledge.stl", 100.00, 24.8, 28.2, 40.0,
+     "modifier: solid infill zone over the ledge, plate z 25.0-28.0"),
 ]
 
 if __name__ == "__main__":

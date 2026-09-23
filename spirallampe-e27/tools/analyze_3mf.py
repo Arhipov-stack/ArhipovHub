@@ -29,8 +29,20 @@ PIXEL = 0.2  # raster resolution for the layer comparison, mm
 
 
 def load_meshes(path):
-    """Yield (name, vertices, faces) for every mesh object in the archive."""
+    """Yield (label, vertices, faces) for every mesh, oriented as it prints.
+
+    A 3MF stores each mesh in its own coordinate system and places it on the
+    plate with a transform in the build section. Bambu routinely flips a part
+    over to print it — the lamp base is stored disc-up and printed disc-down —
+    so the transform has to be applied, or the overhang analysis describes an
+    orientation nobody prints.
+    """
     zf = zipfile.ZipFile(path)
+    root = zf.read("3D/3dmodel.model").decode()
+
+    placement = {m.group(1): np.array(m.group(2).split(), float)[:9].reshape(3, 3)
+                 for m in re.finditer(r'<item objectid="(\d+)"[^>]*transform="([^"]+)"', root)}
+
     names = {}
     try:
         cfg = zf.read("Metadata/model_settings.config").decode()
@@ -40,14 +52,30 @@ def load_meshes(path):
                 names[obj.group(1)] = m.group(1)
     except KeyError:
         pass
+
+    # each mesh file is reached through a component of a placed root object
+    owner = {}
+    for obj in re.finditer(r'<object id="(\d+)"[^>]*>\s*<components>(.*?)</components>',
+                           root, re.S):
+        for comp in re.finditer(r'<component p:path="/([^"]+)"', obj.group(2)):
+            owner[comp.group(1)] = obj.group(1)
+
     for entry in sorted(zf.namelist()):
         if not entry.startswith("3D/Objects/"):
             continue
         raw = zf.read(entry)
         V = np.array(VERTEX.findall(raw), dtype=np.float64)
         F = np.array(TRIANGLE.findall(raw), dtype=np.int64)
-        if len(V) and len(F):
-            yield entry.rsplit("/", 1)[-1], V, F
+        if not len(V) or not len(F):
+            continue
+        oid = owner.get(entry)
+        M = placement.get(oid)
+        if M is not None:
+            V = V @ M
+            if np.linalg.det(M) < 0:      # a mirroring transform flips winding
+                F = F[:, ::-1]
+        label = names.get(oid) or entry.rsplit("/", 1)[-1]
+        yield label, V, F
 
 
 def bulk(V, F):
@@ -142,7 +170,7 @@ def main():
     ap.add_argument("archive", help="the .3mf project file")
     ap.add_argument("--layer", type=float, default=0.2, help="layer height, mm")
     ap.add_argument("--flip", action="store_true",
-                    help="analyse the parts upside down")
+                    help="turn every part over, on top of its stored placement")
     ap.add_argument("--threshold", type=float, default=1.0,
                     help="overhang reach that counts as needing support, mm")
     ap.add_argument("--settings", action="store_true",
