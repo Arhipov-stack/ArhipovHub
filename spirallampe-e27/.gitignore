@@ -1,0 +1,4 @@
+# The Spirallampe model itself is under the Standard Digital File License
+# (Felix3DPrint) and must not be redistributed from this repository.
+*.3mf
+*.gcode
