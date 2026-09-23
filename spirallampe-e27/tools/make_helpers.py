@@ -15,7 +15,13 @@ Bambu Studio / OrcaSlicer:
 
 Heights are given in plate Z (0 = build plate) and converted to the object's
 own Z, which is centred on the object for every part of this project.
+Heights are given in plate Z, measured from the build plate. By default the
+STLs carry those coordinates, so they sit next to parts exported with
+export_stl.py. Pass --object-coords to shift each one into the coordinate
+system of the mesh inside the 3MF instead, which is what Bambu Studio wants
+when the helper is loaded as a part of an existing object there.
 """
+import argparse
 import struct
 from pathlib import Path
 
@@ -74,10 +80,20 @@ PARTS = [
 ]
 
 if __name__ == "__main__":
-    out = Path(__file__).resolve().parent.parent / "stl"
-    out.mkdir(exist_ok=True)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-o", "--out", default=None, help="output directory")
+    ap.add_argument("--object-coords", action="store_true",
+                    help="write in the 3MF object's coordinates instead of "
+                         "plate coordinates")
+    args = ap.parse_args()
+
+    out = Path(args.out) if args.out else Path(__file__).resolve().parent.parent / "stl"
+    out.mkdir(parents=True, exist_ok=True)
     for name, half, z0, z1, r, comment in PARTS:
-        tris = cylinder(r, z0 - half, z1 - half)
+        shift = half if args.object_coords else 0.0
+        tris = cylinder(r, z0 - shift, z1 - shift)
         write_stl(out / name, tris, comment)
-        print(f"{name:28} d{2*r:5.1f} mm  plate z {z0:5.1f}..{z1:5.1f}  "
-              f"object z {z0-half:7.2f}..{z1-half:7.2f}  {len(tris)} tris")
+        print(f"{name:28} d{2*r:5.1f} mm  z {z0-shift:7.2f}..{z1-shift:7.2f}  "
+              f"({'object' if args.object_coords else 'plate'} coords)  "
+              f"{len(tris)} tris")
