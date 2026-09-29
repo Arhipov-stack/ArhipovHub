@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Сборные модели ловушек нефти и газа: модель 2 (литологическая) и модель 4
-(стратиграфическая, под поверхностью несогласия).
+"""Сборные объёмные модели ловушек нефти и газа: модель 2 (литологическая)
+и модель 4 (стратиграфическая, под поверхностью несогласия).
 
-Каждая модель — блок 120 x 50 мм. Детали — профили в плоскости XZ,
-вытянутые на всю глубину блока (50 мм по Y). Соседние детали сцеплены
-шипами и пазами той же формы, что в моделях 1 и 3: шип 6 мм по вершине,
-высота 2,5 мм, стенки 59°, зазор по всем граням (по умолчанию 0,25 мм).
+Каждая модель — блок 120 x 50 мм. Геологические границы — настоящие
+поверхности z = f(x, y): пласт меняется не только вдоль блока, но и по его
+глубине, так что передняя и задняя стенки выглядят по-разному.
+
+Детали сцеплены шипами и пазами той же формы, что в моделях 1 и 3: шип 6 мм
+по вершине, высота 2,5 мм, стенки 59°. Шип — гребень, который идёт по всей
+глубине блока и повторяет поверхность пласта под ним, поэтому он всегда
+прилегает к пласту. Паз в верхней детали — та же поверхность, отодвинутая
+на зазор (по умолчанию 0,25 мм) по всем граням.
+
+Все детали ставятся сверху. Печатаются лёжа на передней стенке (y = 0):
+уклоны поверхностей по глубине пологие, поэтому поддержки не нужны.
 
 Выход (папка stl/):
   2-litologicheskaya-zameschenie.stl   — раскладка для печати
@@ -21,16 +29,16 @@ import os
 
 import numpy as np
 import trimesh
-from shapely import affinity
-from shapely.geometry import MultiPolygon, Polygon, box
-from shapely.ops import unary_union
+from manifold3d import Manifold, Mesh
 
-L, D = 120.0, 50.0            # длина блока (X) и глубина (Y), мм
-STEP = 0.5                    # шаг дискретизации кривых, мм
+L, D = 120.0, 50.0            # длина (X) и глубина (Y) блока, мм
+ZMAX = 100.0
+PAD = 1.0                     # запас поверхностей за краем блока
 TONGUE_TOP = 6.0
 TONGUE_H = 2.5
 TONGUE_ANGLE = 59.0
-MIN_AREA = 0.5                # обрезки меньше этого (мм^2) выбрасываются
+RUN = TONGUE_H / math.tan(math.radians(TONGUE_ANGLE))
+MIN_WALL = 1.5                # минимум материала над пазом, мм
 
 COLORS = {
     "seal_lower": (128, 118, 100),
@@ -42,242 +50,331 @@ COLORS = {
     "gas": (200, 70, 55),
 }
 
-XS = np.arange(0.0, L + STEP / 2, STEP)
-
 
 def smoothstep(t):
     t = np.clip(t, 0.0, 1.0)
     return t * t * (3 - 2 * t)
 
 
-def region_between(lo, hi, x0=0.0, x1=L):
-    """Область lo(x) < z < hi(x) на отрезке [x0, x1]; lo, hi — функции."""
-    xs = XS[(XS >= x0) & (XS <= x1)]
-    if xs[0] > x0:
-        xs = np.r_[x0, xs]
-    if xs[-1] < x1:
-        xs = np.r_[xs, x1]
-    top = [(x, hi(x)) for x in xs]
-    bot = [(x, lo(x)) for x in xs[::-1]]
-    return Polygon(top + bot).buffer(0)
-
-
-def tongue(x0, z_base, up=True, slope=0.0):
-    """Трапеция шипа с вершиной на 2,5 мм над границей в точке (x0, z_base),
-    повёрнутая перпендикулярно границе с наклоном slope. На наклонах до
-    ~30° обе стенки остаются круче горизонтали, так что деталь по-прежнему
-    ставится сверху. Стенки продолжены вглубь детали-хозяина: лишнее срежется."""
-    run = 1.0 / math.tan(math.radians(TONGUE_ANGLE))
-    h = TONGUE_H
-    deep = 8.0
+def bump(x0):
+    """Профиль шипа по X: трапеция высотой 2,5 мм с центром в x0."""
     half = TONGUE_TOP / 2
-    s = 1 if up else -1
-    zt = z_base + s * h
-    zb = zt - s * (h + deep)
-    w = half + (h + deep) * run
-    p = Polygon([(x0 - half, zt), (x0 + half, zt), (x0 + w, zb), (x0 - w, zb)])
-    return affinity.rotate(p, math.degrees(math.atan(slope)), origin=(x0, z_base))
+    return lambda X, Y: TONGUE_H * np.clip((half + RUN - np.abs(X - x0)) / RUN, 0.0, 1.0)
 
 
-def largest(geom):
-    if isinstance(geom, MultiPolygon):
-        parts = [g for g in geom.geoms if g.area >= MIN_AREA]
-        return MultiPolygon(parts) if len(parts) > 1 else parts[0]
-    return geom
+def with_bumps(f, xs, sign=1.0):
+    """Поверхность с шипами. sign = -1 — шип смотрит вниз (паз в нижней детали)."""
+    bs = [bump(x) for x in xs]
+    return lambda X, Y: f(X, Y) + sign * sum(b(X, Y) for b in bs)
 
 
-def build(parts, tongues, clearance):
-    """parts: [(key, name, color, region)] в порядке сборки.
-    tongues: [(owner_key, target_key, x0, boundary_fn, up)].
-    Шип прибавляется к owner и вырезается из target; затем каждая деталь
-    отодвигается от всех ранее поставленных на величину зазора."""
-    reg = {k: r for k, _, _, r in parts}
-    for owner, target, x0, fz, up in tongues:
-        slope = (fz(x0 + 1) - fz(x0 - 1)) / 2
-        t = tongue(x0, fz(x0), up, slope)
-        stick = t.intersection(reg[target])
-        # выступ шипа должен целиком войти в деталь-мишень,
-        # а над пазом должно остаться не меньше 1,5 мм материала
-        full = TONGUE_H * (TONGUE_TOP + TONGUE_H / math.tan(math.radians(TONGUE_ANGLE)))
-        assert stick.area > 0.8 * full, (owner, target, x0, stick.area, full)
-        cap = stick.buffer(1.5 + clearance, join_style=2).difference(stick.buffer(0.01))
-        cap = cap.difference(reg[owner].buffer(0.3)).intersection(box(0, 0, L, 100))
-        lost = cap.difference(reg[target]).area
-        assert lost < 0.5, (owner, target, x0, "тонкая стенка над пазом", lost)
-        rest = reg[target].difference(stick)
-        reg[owner] = reg[owner].union(stick).buffer(0)
-        reg[target] = rest.buffer(0)
-    out, placed = [], []
-    for k, name, color, _ in parts:
-        g = reg[k]
-        if placed:
-            g = g.difference(unary_union(placed).buffer(clearance, join_style=2, mitre_limit=3))
-        g = largest(g.buffer(0))
-        assert not isinstance(g, MultiPolygon), f"{k}: деталь распалась на куски"
-        placed.append(reg[k])
-        out.append((k, name, color, g))
+def dilate(f, c):
+    """Поверхность f, отодвинутая вверх на c по нормали (сдвиг шаром)."""
+    if c <= 0:
+        return f
+    offs = [(dx, dy, math.sqrt(max(c * c - dx * dx - dy * dy, 0.0)))
+            for dx in np.linspace(-c, c, 11) for dy in np.linspace(-c, c, 5)
+            if dx * dx + dy * dy <= c * c + 1e-12]
+
+    def g(X, Y):
+        return np.max([f(X + dx, Y + dy) + dz for dx, dy, dz in offs], axis=0)
+    return g
+
+
+# ------------------------------------------------------------ тела-заготовки
+def _grid(lo, hi, step, fine=(), fine_step=0.1, fine_r=5.6):
+    g = [np.arange(lo, hi + step / 2, step)]
+    for x0 in fine:
+        g.append(np.arange(x0 - fine_r, x0 + fine_r + fine_step / 2, fine_step))
+    g = np.unique(np.round(np.concatenate(g), 4))
+    return g[(g >= lo) & (g <= hi)]
+
+
+def heightfield(f, us, vs, w0, axes=(0, 1, 2)):
+    """Замкнутое тело между плоскостью w = w0 и поверхностью w = f(u, v).
+    axes: какие оси мира соответствуют (u, v, w)."""
+    U, V = np.meshgrid(us, vs, indexing="ij")
+    W = np.asarray(f(U, V), float)
+    W = np.broadcast_to(W, U.shape)
+    nu, nv = U.shape
+    top = np.stack([U, V, W], -1).reshape(-1, 3)
+    bot = np.stack([U, V, np.full_like(U, w0)], -1).reshape(-1, 3)
+    verts = np.vstack([top, bot])
+    idx = np.arange(nu * nv).reshape(nu, nv)
+    off = nu * nv
+    a, b, c, d = idx[:-1, :-1], idx[1:, :-1], idx[1:, 1:], idx[:-1, 1:]
+    tris = [np.stack([a, b, c], -1), np.stack([a, c, d], -1)]
+    tris += [np.stack([a, c, b], -1) + off, np.stack([a, d, c], -1) + off]
+    faces = np.vstack([t.reshape(-1, 3) for t in tris])
+    side = []
+    for ring in (idx[:, 0], idx[-1, :], idx[::-1, -1], idx[0, ::-1]):
+        p, q = ring[:-1], ring[1:]
+        side.append(np.stack([p, q + off, q], -1))
+        side.append(np.stack([p, p + off, q + off], -1))
+    faces = np.vstack([faces] + side)
+    if W.mean() < w0:                      # тело «под» плоскостью — вывернуть
+        faces = faces[:, ::-1]
+    world = np.zeros_like(verts)
+    for i, ax in enumerate(axes):
+        world[:, ax] = verts[:, i]
+    perm_parity = {(0, 1, 2): 1, (1, 2, 0): 1, (2, 0, 1): 1}.get(tuple(axes), -1)
+    if perm_parity < 0:
+        faces = faces[:, ::-1]
+    m = Manifold(Mesh(vert_properties=world.astype(np.float32),
+                      tri_verts=faces.astype(np.uint32)))
+    assert m.status().name == "NoError", m.status()
+    return m
+
+
+class Space:
+    """Строитель тел для одной модели: сетка по X сгущается у шипов."""
+
+    def __init__(self, tongue_xs, c):
+        self.xs = _grid(-PAD, L + PAD, 0.5, fine=tongue_xs)
+        self.ys = _grid(-PAD, D + PAD, 1.0)
+        self.c = c
+
+    def below(self, f):
+        return heightfield(f, self.xs, self.ys, -5.0)
+
+    def above(self, f):
+        return heightfield(f, self.xs, self.ys, ZMAX)
+
+    def above_gap(self, f):
+        """Над поверхностью с зазором: так ставится следующая деталь."""
+        return self.above(dilate(f, self.c))
+
+    def left_of(self, xb, shrink=0.0):
+        """x < xb(y, z) — граница, заданная как x от (y, z)."""
+        ys = _grid(-PAD, D + PAD, 0.5)
+        zs = _grid(-5.0, ZMAX, 0.5)
+        return heightfield(lambda Y, Z: xb(Y, Z) - shrink, ys, zs, -5.0, axes=(1, 2, 0))
+
+    def right_of(self, xb):
+        ys = _grid(-PAD, D + PAD, 0.5)
+        zs = _grid(-5.0, ZMAX, 0.5)
+        return heightfield(xb, ys, zs, L + 5.0, axes=(1, 2, 0))
+
+
+BLOCK = Manifold.cube([L, D, ZMAX])
+
+
+def finish(parts):
+    out = []
+    for key, title, color, solid in parts:
+        solid = solid ^ BLOCK
+        bodies = [b for b in solid.decompose() if b.volume() > 5.0]
+        assert len(bodies) == 1, f"{key}: {len(bodies)} кусков"
+        out.append((key, title, color, bodies[0]))
     return out
 
 
 # ---------------------------------------------------------------- модель 2
-def model2():
-    """Литологическая: пласт изогнут флексурой (высоко слева, низко справа),
-    вверх по восстанию песчаник замещается глинами с «зубчатой» границей.
-    Нефть упирается в глины, ниже — вода. ВНК горизонтален."""
-    base = lambda x: 12.0 + 20.0 * (1 - smoothstep((x - 22.0) / 72.0))
-    thick = 11.0
-    roof = lambda x: base(x) + thick
-    top = lambda x: roof(x) + 15.0 + 1.5 * math.sin(x / 120 * math.pi)
-    owc = 24.0
+def model2(c):
+    """Литологическая. Пласт изогнут флексурой: слева высоко, справа низко;
+    ось флексуры идёт наискосок и слегка выгнута по глубине блока. Вверх по
+    восстанию песчаник замещается глинами: граница зубчатая в плане и
+    наклонная в разрезе (глины надвинуты на песчаник клиньями).
+    Нефть упирается в глины, ниже вода. ВНК горизонтален."""
+    thick = 12.5
+    owc = 21.0
 
-    band = region_between(base, roof)
-    lower = region_between(lambda x: 0.0, base)
-    upper = region_between(roof, top)
+    def base(X, Y):
+        xc = 22.0 + 3.0 * (Y / D - 0.5)
+        return 5.0 + 27.0 * (1 - smoothstep((X - xc) / 72.0)) + 0.8 * np.sin(np.pi * Y / D)
 
-    # Зубчатая граница замещения: три клина глин входят в песчаник
-    # и три клина песчаника — в глины (пальцевидное замещение).
-    x_mid = 40.0
-    nz = 7
-    zs = np.linspace(-2, thick + 2, nz)
-    pts = []
-    for i, dz in enumerate(zs):
-        xo = 6.5 if i % 2 else -6.5
-        # граница идёт перпендикулярно пласту, с учётом наклона
-        slope = (roof(x_mid + 1) - roof(x_mid - 1)) / 2
-        z = base(x_mid) + dz
-        pts.append((x_mid + xo - slope * dz, z))
-    poly_left = Polygon([(-1, -1)] + [(-1, 70)] + [(pts[-1][0], 70)] + pts[::-1] + [(pts[0][0], -1)]).buffer(0)
-    clay = band.intersection(poly_left)
-    sand = band.difference(poly_left)
-    oil = sand.intersection(box(-1, owc, L + 1, 80))
-    water = sand.intersection(box(-1, -1, L + 1, owc))
+    roof = lambda X, Y: base(X, Y) + thick
+    top = lambda X, Y: roof(X, Y) + 15.0 + 1.5 * np.sin(X / L * np.pi) - 0.8 * np.sin(np.pi * Y / D)
 
+    def xb(Y, Z):
+        # зубцы в плане: три зубца на глубину блока, размах ±3,5 мм
+        # (стенки не круче ~40° к оси Y — печатаются без поддержек);
+        # в разрезе граница наклонена — чем выше, тем дальше вправо
+        t = (Y / (D / 3)) % 1.0
+        saw = 3.5 * (4 * np.abs(t - 0.5) - 1)
+        return 41.0 + saw + 0.45 * (Z - 36.0)
+
+    tx_base = [12.0, 106.0]
+    tx_owc = [63.0]
+    tx_roof = [14.0, 60.0]
+    tx_roof_down = [108.0]
+    sp = Space(tx_base + tx_owc + tx_roof + tx_roof_down, c)
+    base_T = with_bumps(base, tx_base)
+    owc_T = with_bumps(lambda X, Y: np.full_like(X, owc), tx_owc)
+    # справа кровля почти у ВНК: шип вверх ушёл бы в нефть, поэтому он смотрит вниз, в воду
+    roof_T = with_bumps(with_bumps(roof, tx_roof), tx_roof_down, sign=-1)
+
+    band = sp.above_gap(base_T) ^ sp.below(roof_T)
+    sand = sp.right_of(xb)
     parts = [
-        ("seal_lower", "01 Непроницаемые породы (подошва)", COLORS["seal_lower"], lower),
-        ("water", "02 Песчаник: вода", COLORS["water"], water),
-        ("oil", "03 Песчаник: нефть", COLORS["oil"], oil),
-        ("clay", "04 Глины замещения (экран)", COLORS["clay"], clay),
-        ("seal_upper", "05 Непроницаемые породы (покрышка)", COLORS["seal_upper"], upper),
+        ("seal_lower", "01 Непроницаемые породы (подошва)", COLORS["seal_lower"], sp.below(base_T)),
+        ("water", "02 Песчаник: вода", COLORS["water"], band ^ sand ^ sp.below(owc_T)),
+        ("oil", "03 Песчаник: нефть", COLORS["oil"], band ^ sand ^ sp.above_gap(owc_T)),
+        ("clay", "04 Глины замещения (экран)", COLORS["clay"], band ^ sp.left_of(xb, shrink=c * 1.1)),
+        ("seal_upper", "05 Непроницаемые породы (покрышка)", COLORS["seal_upper"],
+         sp.above_gap(roof_T) ^ sp.below(top)),
     ]
-    tongues = [
-        ("seal_lower", "clay", 12.0, base, True),
-        ("seal_lower", "water", 106.0, base, True),
-        ("water", "oil", 66.0, lambda x: owc, True),
-        ("clay", "seal_upper", 14.0, roof, True),
-        ("oil", "seal_upper", 54.0, roof, True),
-        ("water", "seal_upper", 108.0, roof, True),
+    tongues = [  # (x0, деталь с шипом, деталь с пазом)
+        (12.0, "seal_lower", "clay"), (106.0, "seal_lower", "water"),
+        (63.0, "water", "oil"),
+        (14.0, "clay", "seal_upper"), (60.0, "oil", "seal_upper"), (108.0, "seal_upper", "water"),
     ]
-    return parts, tongues
+    return finish(parts), tongues
 
 
 # ---------------------------------------------------------------- модель 4
-def model4():
-    """Стратиграфическая: наклонная толща (пласт-коллектор между
-    непроницаемыми слоями) срезана поверхностью размыва и перекрыта
-    почти горизонтальными непроницаемыми породами. Залежь — у среза."""
-    dip = 0.30
-    base = lambda x: 6.0 + dip * (L - x)
+def model4(c):
+    """Стратиграфическая. Наклонная толща (пласт-коллектор между
+    непроницаемыми слоями) срезана волнистой поверхностью размыва и
+    перекрыта почти горизонтальными непроницаемыми породами. Простирание
+    пластов косое к блоку, поэтому линия среза в плане идёт наискосок.
+    Залежь — у среза: газ, ниже нефть, ниже вода; контакты горизонтальны."""
     thick = 12.0
-    roof = lambda x: base(x) + thick
-    unc = lambda x: 38.0 - 0.06 * x                  # поверхность несогласия
-    top = lambda x: 54.0 - 0.02 * x + 1.2 * math.sin(x / 120 * 2 * math.pi)
     goc, owc = 30.0, 22.0
 
-    lower = region_between(lambda x: 0.0, lambda x: min(base(x), unc(x)))
-    band = region_between(base, lambda x: max(base(x), min(roof(x), unc(x))))
-    mid = region_between(roof, lambda x: max(roof(x), unc(x)))
-    cover = region_between(lambda x: min(roof(x), unc(x)), top)
-    cover = cover.difference(mid).difference(band)
+    base = lambda X, Y: 4.0 + 0.34 * (L - X) + 0.07 * (Y - D / 2)
+    roof = lambda X, Y: base(X, Y) + thick
+    unc = lambda X, Y: 37.0 - 0.05 * X + 1.2 * np.sin(np.pi * Y / D) + 0.6 * np.sin(X / 25.0)
+    top = lambda X, Y: 54.0 - 0.02 * X + 1.2 * np.sin(X / L * 2 * np.pi) + 0.8 * np.cos(np.pi * Y / D)
 
-    gas = band.intersection(box(-1, goc, L + 1, 80))
-    oil = band.intersection(box(-1, owc, L + 1, goc))
-    water = band.intersection(box(-1, -1, L + 1, owc))
+    tx_unc = [10.0, 50.0, 100.0]
+    tx_base = [64.0, 110.0]
+    tx_roof = [114.0]
+    tx_owc = [88.0]
+    sp = Space(tx_unc + tx_base + tx_roof + tx_owc, c)
+    unc_T = with_bumps(unc, tx_unc)
+    base_T = with_bumps(base, tx_base)
+    # шип слоя над пластом смотрит вниз: вверх он поднял бы кровлю выше ВНК
+    roof_T = with_bumps(roof, tx_roof, sign=-1)
+    owc_T = with_bumps(lambda X, Y: np.full_like(X, owc), tx_owc, sign=-1)
+    goc_f = lambda X, Y: np.full_like(X, goc)
+    lower_top = lambda X, Y: np.minimum(base_T(X, Y), unc_T(X, Y))
+    band_top = lambda X, Y: np.minimum(roof_T(X, Y), unc_T(X, Y))
 
+    band = sp.above_gap(lower_top) ^ sp.below(band_top)
     parts = [
-        ("seal_lower", "01 Непроницаемые породы (подошва)", COLORS["seal_lower"], lower),
-        ("water", "02 Пласт-коллектор: вода", COLORS["water"], water),
-        ("oil", "03 Пласт-коллектор: нефть", COLORS["oil"], oil),
-        ("gas", "04 Пласт-коллектор: газ", COLORS["gas"], gas),
-        ("seal_mid", "05 Непроницаемый слой над пластом (срезан)", COLORS["seal_mid"], mid),
-        ("seal_upper", "06 Покрышка над несогласием", COLORS["seal_upper"], cover),
+        ("seal_lower", "01 Непроницаемые породы (подошва)", COLORS["seal_lower"], sp.below(lower_top)),
+        ("water", "02 Пласт-коллектор: вода", COLORS["water"], band ^ sp.below(owc_T)),
+        ("oil", "03 Пласт-коллектор: нефть", COLORS["oil"],
+         band ^ sp.above_gap(owc_T) ^ sp.below(goc_f)),
+        ("gas", "04 Пласт-коллектор: газ", COLORS["gas"], band ^ sp.above_gap(goc_f)),
+        ("seal_mid", "05 Непроницаемый слой над пластом (срезан)", COLORS["seal_mid"],
+         sp.above_gap(band_top) ^ sp.below(unc_T)),
+        ("seal_upper", "06 Покрышка над несогласием", COLORS["seal_upper"],
+         sp.above_gap(unc_T) ^ sp.below(top)),
     ]
     tongues = [
-        ("seal_lower", "seal_upper", 8.0, unc, True),
-        ("seal_lower", "oil", 58.0, base, True),
-        ("seal_lower", "water", 108.0, base, True),
-        ("water", "oil", 86.0, lambda x: owc, True),
-        ("gas", "seal_upper", 46.0, unc, True),
-        ("water", "seal_mid", 113.0, roof, True),
-        ("seal_mid", "seal_upper", 100.0, unc, True),
+        (10.0, "seal_lower", "seal_upper"), (50.0, "gas", "seal_upper"), (100.0, "seal_mid", "seal_upper"),
+        (64.0, "seal_lower", "oil"), (110.0, "seal_lower", "water"),
+        (114.0, "seal_mid", "water"), (88.0, "oil", "water"),
     ]
-    return parts, tongues
+    return finish(parts), tongues
 
 
-# ---------------------------------------------------------------- экспорт
-def extrude_assembled(poly):
-    """Деталь в собранном положении: профиль XZ, глубина по Y."""
-    m = trimesh.creation.extrude_polygon(poly, D)       # профиль в XY, высота по Z
-    # поворот на 90° вокруг X: (x, z_geo, depth) -> (x, D - depth, z_geo)
-    m.apply_transform(np.array([[1, 0, 0, 0], [0, 0, -1, D], [0, 1, 0, 0], [0, 0, 0, 1]], float))
-    return m
+# ---------------------------------------------------------------- проверки
+def column(solid, x, y):
+    """Толщина тела по вертикали в точке (x, y), мм."""
+    col = Manifold.cube([0.05, 0.05, ZMAX + 10]).translate([x - 0.025, y - 0.025, -5])
+    return (solid ^ col).volume() / 0.0025
 
 
-def extrude_print(poly):
-    """Печатное положение: профиль лежит на столе."""
-    return trimesh.creation.extrude_polygon(poly, D)
+def check(parts, tongues, c):
+    by = {k: s for k, _, _, s in parts}
+    ys = [1.0, 12.0, 25.0, 38.0, 49.0]
+    problems = []
+    for x0, owner, target in tongues:
+        for y in ys:
+            # над вершиной шипа должна остаться стенка
+            for dx in (-TONGUE_TOP / 2 + 0.3, 0.0, TONGUE_TOP / 2 - 0.3):
+                t = column(by[target], x0 + dx, y)
+                if t < MIN_WALL:
+                    problems.append(f"x={x0 + dx:.1f} y={y:.0f}: над пазом в {target} {t:.2f} мм")
+            # под шипом и сбоку от паза — сплошной материал обеих деталей
+            half = TONGUE_TOP / 2 + RUN + c + 0.3
+            for dx in (-half, half):
+                for k in (owner, target):
+                    if column(by[k], x0 + dx, y) < 1.0:
+                        problems.append(f"x={x0 + dx:.1f} y={y:.0f}: шип {owner}->{target} выходит за {k}")
+    keys = list(by)
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            ov = (by[keys[i]] ^ by[keys[j]]).volume()
+            if ov > 1e-3:
+                problems.append(f"{keys[i]} и {keys[j]} пересекаются: {ov:.3f} мм³")
+    return problems
 
 
-def export(name, file_stem, parts, outdir, bed=180.0, gap=4.0):
-    pdir = os.path.join(outdir, name)
+def to_trimesh(solid):
+    # плоские участки сетки сливаются; форма меняется не больше чем на 0,02 мм
+    m = solid.simplify(0.02).to_mesh()
+    return trimesh.Trimesh(np.asarray(m.vert_properties)[:, :3], np.asarray(m.tri_verts), process=True)
+
+
+def print_pose(tm):
+    """Деталь кладётся на переднюю стенку (y = 0): y становится высотой."""
+    r = trimesh.transformations.rotation_matrix(math.pi / 2, [1, 0, 0])   # (x,y,z)->(x,-z,y)
+    tm = tm.copy()
+    tm.apply_transform(r)
+    tm.apply_translation(-tm.bounds[0])
+    return tm
+
+
+def overhang(tm, limit=45.0):
+    """Доля площади, нависающей круче limit° от вертикали (без опоры на стол)."""
+    n = tm.face_normals
+    z = tm.triangles_center[:, 2]
+    bad = (n[:, 2] < -math.cos(math.radians(limit))) & (z > 0.3)
+    return tm.area_faces[bad].sum() / tm.area
+
+
+def export(key, stem, parts, outdir, bed=180.0, gap=4.0):
+    pdir = os.path.join(outdir, key)
     os.makedirs(pdir, exist_ok=True)
     os.makedirs(os.path.join(outdir, "preview"), exist_ok=True)
     plate, asm, report = [], [], []
     y = 0.0
-    for k, title, color, g in parts:
+    for k, title, color, solid in parts:
         num = title.split()[0]
-        pm = extrude_print(g)
-        assert pm.is_watertight, k
+        tm = to_trimesh(solid)
+        assert tm.is_watertight, k
+        pm = print_pose(tm)
         fname = f"{num}_{k}.stl"
         pm.export(os.path.join(pdir, fname))
-        # раскладка: детали столбиком по Y стола
-        minx, miny, maxx, maxy = g.bounds
         placed = pm.copy()
-        placed.apply_translation([-minx, y - miny, 0])
+        placed.apply_translation([0, y, 0])
         plate.append(placed)
-        y += (maxy - miny) + gap
-        am = extrude_assembled(g)
+        y += pm.extents[1] + gap
+        am = tm.copy()
         am.visual.face_colors = list(color) + [255]
         asm.append(am)
-        report.append((num, title, fname, pm.volume))
+        report.append((title, fname, pm.volume, pm.extents, overhang(pm)))
     plate_mesh = trimesh.util.concatenate(plate)
     ext = plate_mesh.extents
-    offset = [(bed - ext[0]) / 2, (bed - ext[1]) / 2, 0]
-    plate_mesh.apply_translation(offset - plate_mesh.bounds[0] * [1, 1, 0])
-    plate_mesh.export(os.path.join(outdir, file_stem + ".stl"))
-    asm_scene = trimesh.util.concatenate(asm)
-    asm_scene.export(os.path.join(outdir, "preview", file_stem + "_sborka.stl"))
-    return report, ext, asm
+    assert ext[0] <= bed and ext[1] <= bed, f"раскладка не влезает на стол: {ext}"
+    plate_mesh.apply_translation([(bed - ext[0]) / 2, (bed - ext[1]) / 2, 0])
+    plate_mesh.export(os.path.join(outdir, stem + ".stl"))
+    trimesh.util.concatenate(asm).export(os.path.join(outdir, "preview", stem + "_sborka.stl"))
+    return report, ext
 
 
-def render(parts, path, title, explode=0.0, size=(1100, 720)):
+# ---------------------------------------------------------------- превью
+def render(parts, path, title, explode=0.0, size=(1100, 720), az_deg=-35, el_deg=28):
     """Изометрическое превью с z-буфером (без OpenGL)."""
     from PIL import Image, ImageDraw, ImageFont
 
     W, H = size
-    az, el = math.radians(-35), math.radians(28)
-    # камера: смотрим с угла (-X, -Y, +Z)
+    az, el = math.radians(az_deg), math.radians(el_deg)
     R1 = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]])
     R2 = np.array([[1, 0, 0], [0, math.cos(el), -math.sin(el)], [0, math.sin(el), math.cos(el)]])
     R = R2 @ R1
     light = np.array([-0.35, -0.8, 0.9])
     light /= np.linalg.norm(light)
     meshes = []
-    for i, (k, t, color, g) in enumerate(parts):
-        m = extrude_assembled(g)
+    for i, (k, t, color, solid) in enumerate(parts):
+        m = to_trimesh(solid)
         m.apply_translation([0, 0, i * explode])
         meshes.append((m, np.array(color, float)))
     allv = np.vstack([m.vertices for m, _ in meshes]) @ R.T
-    # экранные координаты: x -> вправо, z -> вверх, y -> глубина
     lo, hi = allv.min(0), allv.max(0)
     sc = 0.88 * min(W / (hi[0] - lo[0]), (H - 60) / (hi[2] - lo[2]))
     ox = (W - sc * (hi[0] - lo[0])) / 2
@@ -302,19 +399,17 @@ def render(parts, path, title, explode=0.0, size=(1100, 720)):
             gx, gy = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
             a = ((y[1] - y[2]) * (gx - x[2]) + (x[2] - x[1]) * (gy - y[2])) / den
             b = ((y[2] - y[0]) * (gx - x[2]) + (x[0] - x[2]) * (gy - y[2])) / den
-            c = 1 - a - b
-            inside = (a >= -1e-6) & (b >= -1e-6) & (c >= -1e-6)
+            cc = 1 - a - b
+            inside = (a >= -1e-6) & (b >= -1e-6) & (cc >= -1e-6)
             if not inside.any():
                 continue
-            zz = a * z[0] + b * z[1] + c * z[2]
+            zz = a * z[0] + b * z[1] + cc * z[2]
             sub = zbuf[y0:y1 + 1, x0:x1 + 1]
             upd = inside & (zz < sub)
             sub[upd] = zz[upd]
             img[y0:y1 + 1, x0:x1 + 1][upd] = color * s_
-    # тонкие контуры по разрывам глубины — чтобы читались границы деталей
     edge = np.zeros((H, W), bool)
-    fin = np.isfinite(zbuf)
-    zb = np.where(fin, zbuf, 1e6)
+    zb = np.where(np.isfinite(zbuf), zbuf, 1e6)
     edge[1:, :] |= np.abs(zb[1:, :] - zb[:-1, :]) > 1.5
     edge[:, 1:] |= np.abs(zb[:, 1:] - zb[:, :-1]) > 1.5
     img[edge] *= 0.55
@@ -332,23 +427,33 @@ def main():
     ap.add_argument("--clearance", type=float, default=0.25)
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "stl"))
     ap.add_argument("--render", action="store_true", help="сохранить PNG-превью")
+    ap.add_argument("--no-check", action="store_true", help="пропустить проверку шипов")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     models = [
         ("model2", "2-litologicheskaya-zameschenie", "Модель 2. Литологическая", model2),
         ("model4", "4-stratigraficheskaya-nesoglasie", "Модель 4. Стратиграфическая (несогласие)", model4),
     ]
+    failed = False
     for key, stem, title, fn in models:
-        p, t = fn()
-        parts = build(p, t, a.clearance)
-        report, ext, _ = export(key, stem, parts, a.out)
+        parts, tongues = fn(a.clearance)
+        if not a.no_check:
+            probs = check(parts, tongues, a.clearance)
+            for p in probs:
+                print("  ПРОБЛЕМА:", p)
+            failed |= bool(probs)
+        report, ext = export(key, stem, parts, a.out)
         print(f"\n{title}: раскладка {ext[0]:.0f} x {ext[1]:.0f} x {ext[2]:.0f} мм")
-        for num, name, fname, vol in report:
-            print(f"  {name:48s} {fname:22s} {vol / 1000:6.1f} см³")
+        for name, fname, vol, e, oh in report:
+            print(f"  {name:44s} {fname:22s} {vol / 1000:6.1f} см³  "
+                  f"{e[0]:.0f}x{e[1]:.0f}x{e[2]:.0f}  нависания {oh * 100:.1f}%")
         if a.render:
             pdir = os.path.join(a.out, "preview")
             render(parts, os.path.join(pdir, stem + ".png"), title)
+            render(parts, os.path.join(pdir, stem + "_szadi.png"), title + " — вид сзади", az_deg=145)
             render(parts, os.path.join(pdir, stem + "_razbor.png"), title + " — разнесённые детали", explode=12)
+    if failed:
+        raise SystemExit("есть проблемы с шипами — см. выше")
 
 
 if __name__ == "__main__":
