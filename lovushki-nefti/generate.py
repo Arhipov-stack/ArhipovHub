@@ -40,6 +40,11 @@ TONGUE_ANGLE = 59.0
 RUN = TONGUE_H / math.tan(math.radians(TONGUE_ANGLE))
 MIN_WALL = 1.5                # минимум материала над пазом, мм
 
+# Поддон (5-poddon-osnovanie.stl): карман 120,8 x 50,8 мм глубиной 7 мм.
+# В карман должна входить только подошва — её низ везде толще кармана.
+TRAY_POCKET = (120.8, 50.8, 7.0)
+TRAY_MARGIN = 1.5             # подошва выше края поддона хотя бы на столько
+
 COLORS = {
     "seal_lower": (128, 118, 100),
     "seal_upper": (170, 160, 140),
@@ -177,14 +182,14 @@ def model2(c):
     наклонная в разрезе (глины надвинуты на песчаник клиньями).
     Нефть упирается в глины, ниже вода. ВНК горизонтален."""
     thick = 12.5
-    owc = 21.0
+    owc = 25.0
 
     def base(X, Y):
         xc = 22.0 + 3.0 * (Y / D - 0.5)
-        return 5.0 + 27.0 * (1 - smoothstep((X - xc) / 72.0)) + 0.8 * np.sin(np.pi * Y / D)
+        return 9.0 + 27.0 * (1 - smoothstep((X - xc) / 72.0)) + 0.8 * np.sin(np.pi * Y / D)
 
     roof = lambda X, Y: base(X, Y) + thick
-    top = lambda X, Y: roof(X, Y) + 15.0 + 1.5 * np.sin(X / L * np.pi) - 0.8 * np.sin(np.pi * Y / D)
+    top = lambda X, Y: roof(X, Y) + 11.5 + 1.5 * np.sin(X / L * np.pi) - 0.8 * np.sin(np.pi * Y / D)
 
     def xb(Y, Z):
         # зубцы в плане: три зубца на глубину блока, размах ±3,5 мм
@@ -230,12 +235,12 @@ def model4(c):
     пластов косое к блоку, поэтому линия среза в плане идёт наискосок.
     Залежь — у среза: газ, ниже нефть, ниже вода; контакты горизонтальны."""
     thick = 12.0
-    goc, owc = 30.0, 22.0
+    goc, owc = 37.0, 29.0
 
-    base = lambda X, Y: 4.0 + 0.34 * (L - X) + 0.07 * (Y - D / 2)
+    base = lambda X, Y: 11.0 + 0.34 * (L - X) + 0.07 * (Y - D / 2)
     roof = lambda X, Y: base(X, Y) + thick
-    unc = lambda X, Y: 37.0 - 0.05 * X + 1.2 * np.sin(np.pi * Y / D) + 0.6 * np.sin(X / 25.0)
-    top = lambda X, Y: 54.0 - 0.02 * X + 1.2 * np.sin(X / L * 2 * np.pi) + 0.8 * np.cos(np.pi * Y / D)
+    unc = lambda X, Y: 44.0 - 0.05 * X + 1.2 * np.sin(np.pi * Y / D) + 0.6 * np.sin(X / 25.0)
+    top = lambda X, Y: 58.0 - 0.02 * X + 1.2 * np.sin(X / L * 2 * np.pi) + 0.8 * np.cos(np.pi * Y / D)
 
     tx_unc = [10.0, 50.0, 100.0]
     tx_base = [64.0, 110.0]
@@ -295,6 +300,11 @@ def check(parts, tongues, c):
                 for k in (owner, target):
                     if column(by[k], x0 + dx, y) < 1.0:
                         problems.append(f"x={x0 + dx:.1f} y={y:.0f}: шип {owner}->{target} выходит за {k}")
+    lower = parts[0][3].bounding_box()
+    assert lower[3] - lower[0] <= TRAY_POCKET[0] and lower[4] - lower[1] <= TRAY_POCKET[1]
+    for k, s in by.items():
+        if k != "seal_lower" and s.bounding_box()[2] < TRAY_POCKET[2] + TRAY_MARGIN:
+            problems.append(f"{k} опускается в карман поддона: низ на {s.bounding_box()[2]:.2f} мм")
     keys = list(by)
     for i in range(len(keys)):
         for j in range(i + 1, len(keys)):
