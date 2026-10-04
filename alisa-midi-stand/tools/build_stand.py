@@ -770,6 +770,28 @@ def to_mesh(fld, F):
     return m
 
 
+def clean(m):
+    """Makes the mesh survive being written as STL.
+
+    Decimation leaves a few slivers, and STL stores float32, which collapses
+    some more of them into zero-area triangles. Round to float32 first, then
+    drop the slivers and close the gaps, until nothing changes.
+    """
+    import trimesh
+    for _ in range(5):
+        m.vertices = m.vertices.astype(np.float32).astype(np.float64)
+        m.merge_vertices()
+        n = len(m.faces)
+        m.update_faces(m.nondegenerate_faces(height=1e-6))
+        m.update_faces(m.unique_faces())
+        m.remove_unreferenced_vertices()
+        trimesh.repair.fill_holes(m)
+        if len(m.faces) == n and m.is_watertight:
+            break
+    trimesh.repair.fix_normals(m)
+    return m
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -788,21 +810,16 @@ def main():
         import trimesh
         v, f = fast_simplification.simplify(m.vertices, m.faces,
                                             target_reduction=1 - args.faces / len(m.faces))
-        m = trimesh.Trimesh(v, f, process=True)
-        # collapsing edges leaves a few slivers; drop them and close the gaps
-        m.update_faces(m.nondegenerate_faces(height=1e-6))
-        m.update_faces(m.unique_faces())
-        m.remove_unreferenced_vertices()
-        m.merge_vertices()
-        trimesh.repair.fill_holes(m)
-        trimesh.repair.fix_normals(m)
+        m = clean(trimesh.Trimesh(v, f, process=True))
         print(f"decimated: {len(m.faces):,} triangles, watertight={m.is_watertight}")
     ext = m.bounds
     print(f"size: {ext[1, 0] - ext[0, 0]:.1f} x {ext[1, 1] - ext[0, 1]:.1f} x "
           f"{ext[1, 2] - ext[0, 2]:.1f} mm, volume {m.volume / 1000:.1f} cm3")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     m.export(args.out)
-    print("wrote", args.out)
+    import trimesh
+    back = trimesh.load(args.out)
+    print("wrote", args.out, "- reloaded watertight:", back.is_watertight)
 
 
 if __name__ == "__main__":
