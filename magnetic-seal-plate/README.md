@@ -15,3 +15,12 @@ python3 tools/draw_concept.py   # пересобрать concept.svg
 ```
 
 Схема без масштаба: размеры и число магнитных блоков будут уточнены расчётом.
+
+## Презентация
+
+`presentation/MVGP_presentation.pptx` — презентация в стиле ДВФУ на 18 слайдов;
+текст доклада записан в заметках к слайдам. Пересборка:
+
+```
+cd presentation && NODE_PATH=<путь к node_modules с pptxgenjs> node build_deck.js
+```
