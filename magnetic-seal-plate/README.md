@@ -24,3 +24,11 @@ python3 tools/draw_concept.py   # пересобрать concept.svg
 ```
 cd presentation && NODE_PATH=<путь к node_modules с pptxgenjs> node build_deck.js
 ```
+
+## Дополнительные виды и экономика
+
+- `tools/draw_views.py` → `views/*.svg` — основной режим на трубе, пластина на
+  стенке РВС, разнесённый вид, кадры «примерка» и «установлено».
+- `economics/economics.py` → `economics/results.txt` — себестоимость комплекта,
+  эффект для заказчика (расход нефти через отверстие) и окупаемость проекта.
+  Все цены — оценки на 2026 г. без НДС; допущения записаны в начале скрипта.
