@@ -1,235 +1,314 @@
-"""Наружная ручка двери Toyota Corolla Ceres (AE100/AE101), черновая модель.
+"""Наружная ручка двери Toyota Corolla Ceres (AE100/AE101).
 
-Тип ручки — «лопатка» (flap): пластина поднимается вверх-наружу и
-поворачивается вокруг горизонтальной оси у верхнего края. Ручка состоит
-из двух печатных деталей и стального штифта:
+Та же ручка стоит на Corolla E100 1993–1997 и RAV4 1996–2000
+(оригинальный номер передней левой с личинкой — 69220-12160).
 
-  * корпус (bezel)  — накладка на дверь с чашкой под пальцы;
-  * лопатка (flap)  — подвижная часть с рычагом под тягу замка;
-  * штифт Ø4 мм     — ось лопатки, проходит через торцы чашки.
+Форма в плане снята с фото (tools/outline_photo.json, см. trace_photo.py):
+вытянутое «яйцо», узкое спереди и широкое у личинки. Механизм тоже по
+фото: лопатка закрывает верхнюю половину проёма, под ней карман под
+пальцы; ось — стальной штифт сзади вверху, на двух кронштейнах, с
+пружиной кручения; рядом с личинкой на лопатке рычаг под тягу замка.
+
+Детали:
+  * корпус (bezel)  — накладка с проёмом, карманом, кронштейнами оси,
+                      бобышками крепления и гнездом личинки;
+  * лопатка (flap)  — подвижная часть: пластина, загиб под пальцы,
+                      проушины на ось и рычаг на тягу;
+  * штифт Ø4 мм и пружина — покупные или с донора.
 
 Система координат (вид на дверь снаружи):
-  X — вдоль машины, +X в сторону замка (задний край двери, при виде
-      снаружи он слева);
+  X — вдоль машины, +X в сторону личинки и замка (задний край двери,
+      при виде снаружи он слева);
   Y — по нормали к двери, +Y наружу, Y=0 — наружная поверхность обшивки;
   Z — вверх.
 
-В таком виде получается ручка ПРАВОЙ стороны машины: у японской
-праворульной Ceres это водительская дверь. Левая сторона — зеркало по X
-(export_all делает оба варианта).
+В таком виде это ручка ПРАВОЙ стороны (у праворульной Ceres —
+водительская). Левая, как на фото, — зеркало по X.
 
-Все размеры ниже — оценка по типовым ручкам Toyota того поколения, а не
-замер. Перед печатью их надо сверить с оригиналом (см. README).
+Масштаб фото задаётся одной длиной накладки (P.length). Глубины по Y
+по фото анфас не определить — они оценочные.
 """
 
+import json
 from dataclasses import dataclass, replace
+from functools import lru_cache
+from pathlib import Path
 
 import cadquery as cq
+import numpy as np
+from scipy.spatial import ConvexHull
+
+PHOTO = json.loads(Path(__file__).with_name("outline_photo.json").read_text())
 
 
 @dataclass(frozen=True)
 class P:
-    # Проём под лопатку
-    open_len: float = 120.0      # длина проёма по X
-    open_h: float = 38.0         # высота проёма по Z
-    open_r_bot: float = 6.0      # скругление нижних углов проёма
+    length: float = 203.0        # длина накладки — калибрует весь контур с фото
 
-    # Корпус-накладка
-    margin_x: float = 14.0       # поле накладки от проёма до края по X
-    margin_z: float = 9.0        # поле накладки над/под проёмом
-    bezel_r: float = 10.0        # скругление углов накладки (вид спереди)
-    proud: float = 5.0           # насколько лицо накладки выступает над обшивкой
-    edge_fillet: float = 2.5     # скругление кромки лица накладки
-    wall: float = 2.2            # стенки чашки
-    cup_depth: float = 22.0      # глубина чашки от обшивки внутрь двери
-
-    # Крепление: бобышки под термовставки M5 (болт изнутри двери)
-    boss_d: float = 10.0
-    boss_len: float = 4.0        # выступ бобышки за обшивку
-    insert_d: float = 6.4        # отверстие под термовставку M5
-    insert_depth: float = 8.0
-
-    # Личинка замка (только передние двери)
-    key: bool = False
-    key_extra: float = 30.0      # насколько удлиняется накладка под личинку
-    key_hole_d: float = 22.0
-    key_tube_d: float = 28.0
-    key_tube_len: float = 16.0
+    # Накладка
+    proud: float = 9.0           # выступ лица накладки над обшивкой
+    front_fillet: float = 3.5    # скругление наружной кромки
+    open_fillet: float = 1.0     # скругление кромки проёма
+    floor_y: float = 2.0         # дно мелкой части проёма (узкий конец), над обшивкой
+    deep_from_x: float = -60.0   # глубокий карман от этого X до конца проёма
+    cup_clear: float = 1.0       # карман шире проёма на столько (ободок нависает)
+    cup_wall: float = 2.2
+    cup_depth: float = 24.0      # глубина кармана за обшивкой
 
     # Лопатка
-    gap: float = 0.8             # зазор лопатки в проёме
-    flap_t: float = 3.5          # толщина пластины лопатки
-    barrel_r: float = 4.5        # радиус втулки оси
-    pin_d: float = 4.0           # штифт оси (стальной пруток / гвоздь Ø4)
-    pin_clear: float = 0.3       # люфт штифта во втулке лопатки
-    finger_gap: float = 14.0     # открытая щель под пальцы снизу
-    lip_depth: float = 7.0       # загиб низа лопатки внутрь (зацеп для пальцев)
-    lip_t: float = 3.0
+    gap: float = 0.8             # зазор лопатки в проёме и по всем движущимся поверхностям
+    paddle_recess: float = 2.5   # лицо лопатки ниже лица накладки
+    paddle_t: float = 3.0
+    lip_depth: float = 9.0       # загиб низа лопатки внутрь, от лица лопатки
+    lip_t: float = 2.5
+    lug_t: float = 4.0           # проушины на ось
+    lug_r: float = 4.5
+    spring_room: float = 12.0    # место под пружину между левым кронштейном и проушиной
+    lever_len: float = 28.0      # рычаг на тягу: от оси назад, выходит за карман
+    rod_hole_d: float = 5.0
+    swing_deg: float = 22.0      # ход лопатки
+    stop_x: tuple = (-40.0, 45.0)   # упоры закрытого положения за загибом лопатки
+    stop_w: float = 4.0
+    stop_clear: float = 0.2
 
-    # Рычаг на тягу замка
-    arm_from_end: float = 10.0   # центр рычага от торца проёма со стороны замка
-    arm_w: float = 6.0
-    arm_h: float = 9.0
-    arm_reach: float = 36.0      # вылет рычага внутрь двери от оси
-    rod_hole_d: float = 5.0      # под клипсу/конец тяги
-    swing_deg: float = 25.0      # ход лопатки (для проверки и рендера)
+    # Ось
+    pivot_y: float = -1.5        # ось сразу за обшивкой
+    pivot_z: float = 23.0
+    pin_d: float = 4.0
+    pin_clear: float = 0.3
+    bracket_r: float = 4.0
 
-    # Упоры закрытого положения: лопатка ложится на них изнутри
-    stop_w: float = 3.5          # насколько упор заходит под лопатку по X
-    stop_h: float = 5.0
-    stop_depth: float = 4.0
+    # Крепление: бобышки под термовставки M4 (болты изнутри двери)
+    boss_d: float = 9.0
+    boss_len: float = 6.0
+    insert_d: float = 5.6
+    insert_depth: float = 7.0
 
-    # --- производные величины ---
+    # Личинка
+    key: bool = False
+    key_tube_wall: float = 3.0
+    key_tube_len: float = 16.0
+
+    # --- производные ---
     @property
-    def bezel_x0(self):
-        return -self.open_len / 2 - self.margin_x
+    def s(self):
+        x0, x1, _, _ = PHOTO["outer_bbox"]
+        return self.length / (x1 - x0)
+
+    def xz(self, u, v):
+        x0, x1, y0, y1 = PHOTO["outer_bbox"]
+        return ((u - (x0 + x1) / 2) * self.s, ((y0 + y1) / 2 - v) * self.s)
 
     @property
-    def bezel_x1(self):
-        return self.open_len / 2 + self.margin_x + (self.key_extra if self.key else 0)
-
-    @property
-    def bezel_h(self):
-        return self.open_h + 2 * self.margin_z
+    def face_y(self):
+        return self.proud - self.paddle_recess
 
     @property
     def pivot(self):
-        """(Y, Z) оси лопатки: втулка касается плоскости лица накладки."""
-        return (self.proud - self.barrel_r, self.open_h / 2 - self.gap - self.barrel_r)
+        return (self.pivot_y, self.pivot_z)
 
     @property
-    def key_x(self):
-        return self.open_len / 2 + self.margin_x + self.key_extra / 2 - 2
+    def key_xz(self):
+        return self.xz(*PHOTO["key_center"])
 
     @property
-    def boss_xs(self):
-        inner = self.open_len / 2 + self.wall
-        left = -(inner + self.margin_x / 2)
-        right = (self.bezel_x1 - self.margin_x / 2) if self.key else inner + self.margin_x / 2
-        return (left, right)
+    def key_d(self):
+        return PHOTO["key_diam"] * self.s
+
+    @property
+    def brackets_x(self):
+        return [tuple(sorted(self.xz(u, 0)[0] for u in b)) for b in PHOTO["brackets_u"]]
+
+    @property
+    def lugs_x(self):
+        """Проушины: левая — через место под пружину, правая — вплотную к кронштейну."""
+        (_, l1), (r0, _) = self.brackets_x
+        left0 = l1 + self.spring_room
+        right1 = r0 - 0.5
+        return ((left0, left0 + self.lug_t), (right1 - self.lug_t, right1))
+
+    @property
+    def bosses(self):
+        kx, kz = self.key_xz
+        pts = [(-80.0, -1.0), (kx - 7.0, kz + 24.0)]
+        if self.key:
+            pts.append((kx + 9.0, kz + 20.0))   # винт фиксатора личинки
+        return pts
+
+    def split_z(self, x):
+        (u0, v0), (u1, v1) = PHOTO["split_line"]
+        (x0, z0), (x1, z1) = self.xz(u0, v0), self.xz(u1, v1)
+        return z0 + (z1 - z0) * (x - x0) / (x1 - x0)
 
 
-def _xz_box(x0, x1, z0, z1, y0, y1):
-    """Прямоугольный брусок по границам."""
-    return (cq.Workplane("XY")
-            .box(x1 - x0, y1 - y0, z1 - z0)
+# ---------- 2D-заготовки в плоскости XZ ----------
+
+def _xz_wp(y):
+    """Рабочая плоскость XZ на уровне y; extrude(d) идёт в -Y."""
+    return cq.Workplane(cq.Plane(origin=(0, y, 0), xDir=(1, 0, 0), normal=(0, -1, 0)))
+
+
+def _contour(p: P, key):
+    return [p.xz(u, v) for u, v in PHOTO[key]]
+
+
+def _prism(p: P, key, y0, y1, offset=0.0):
+    """Контур с фото (inner/outer), раздутый на offset, выдавленный от y1 вниз до y0."""
+    wp = _xz_wp(y1).spline(_contour(p, key), periodic=True).close()
+    if offset:
+        wp = wp.offset2D(offset, "arc")
+    return wp.extrude(y1 - y0)
+
+
+def _box(x0, x1, y0, y1, z0, z1):
+    return (cq.Workplane("XY").box(x1 - x0, y1 - y0, z1 - z0)
             .translate(((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2)))
 
 
-def _opening_prism(p: P, grow: float, y0: float, y1: float):
-    """Профиль проёма (вид спереди), выдавленный по Y от y0 до y1.
-
-    grow расширяет профиль во все стороны (для внешних стенок чашки).
-    Нижние углы скруглены, верхние — острые: там стоит втулка оси.
-    """
-    x0, x1 = -p.open_len / 2 - grow, p.open_len / 2 + grow
-    z0, z1 = -p.open_h / 2 - grow, p.open_h / 2 + grow
-    body = _xz_box(x0, x1, z0, z1, y0, y1)
-    r = p.open_r_bot + grow
-    return body.edges("|Y").edges("<Z").fillet(r)
+def _above_split(p: P, y0, y1, dz=0.0, band=None):
+    """Полуплоскость над нижней кромкой лопатки (или полоса высотой band)."""
+    xa, xb = -200.0, 200.0
+    za, zb = p.split_z(xa) + dz, p.split_z(xb) + dz
+    top_a, top_b = (za + band, zb + band) if band else (200.0, 200.0)
+    return (_xz_wp(y1).polyline([(xa, za), (xb, zb), (xb, top_b), (xa, top_a)]).close()
+            .extrude(y1 - y0))
 
 
-def bezel(p: P = P()) -> cq.Workplane:
-    x0, x1, h = p.bezel_x0, p.bezel_x1, p.bezel_h
+def _yz_hull(points, x0, x1):
+    """Выпуклая оболочка точек (y, z), выдавленная по X от x0 до x1."""
+    pts = np.array(points)
+    hull = pts[ConvexHull(pts).vertices]
+    return (cq.Workplane("YZ", origin=(x0, 0, 0))
+            .polyline([tuple(q) for q in hull]).close().extrude(x1 - x0))
 
-    # Накладка: плита от обшивки до лица, скруглённая в плане и по кромке
-    plate = (_xz_box(x0, x1, -h / 2, h / 2, 0, p.proud)
-             .edges("|Y").fillet(p.bezel_r)
-             .faces(">Y").edges().fillet(p.edge_fillet))
 
-    # Чашка за проёмом, уходит сквозь вырез в обшивке внутрь двери
-    cup_outer = _opening_prism(p, p.wall, -p.cup_depth - p.wall, p.proud)
-    body = plate.union(cup_outer)
-    body = body.cut(_opening_prism(p, 0, -p.cup_depth, p.proud + 1))
+def _circle_pts(c, r, n=24):
+    return [(c[0] + r * np.cos(a), c[1] + r * np.sin(a))
+            for a in np.linspace(0, 2 * np.pi, n, endpoint=False)]
 
-    # Упоры на торцах чашки: держат лопатку заподлицо, когда пружина её прижимает
-    zb = -p.open_h / 2 + p.finger_gap
-    back = p.proud - p.flap_t
-    for sx in (-1, 1):
-        x_wall = sx * p.open_len / 2
-        stop = _xz_box(min(x_wall, x_wall - sx * p.stop_w), max(x_wall, x_wall - sx * p.stop_w),
-                       zb + p.lip_t + 0.5, zb + p.lip_t + 0.5 + p.stop_h,
-                       back - p.stop_depth, back - 0.1)
-        body = body.union(stop)
 
-    # Прорезь в дне чашки под рычаг лопатки (с запасом на ход вниз)
+# ---------- лопатка ----------
+
+def _paddle(p: P, grow=0.0) -> cq.Workplane:
+    """Лопатка в закрытом положении. grow>0 — раздутая копия для выреза зазоров."""
+    g = grow
+    fy = p.face_y
+    # Пластина: проём минус зазор, выше нижней кромки
+    plate = (_prism(p, "inner", fy - p.paddle_t - g, fy + g, offset=-p.gap + g)
+             .intersect(_above_split(p, fy - p.paddle_t - g - 1, fy + g + 1, dz=-g)))
+    # Загиб низа внутрь — только в глубокой части, у мелкого конца ему некуда
+    lip = (_prism(p, "inner", fy - p.lip_depth - g, fy - p.paddle_t + 0.01, offset=-p.gap + g)
+           .intersect(_above_split(p, fy - p.lip_depth - g - 1, fy + 1, dz=-g, band=p.lip_t + 2 * g))
+           .intersect(_box(p.deep_from_x + p.cup_clear + p.gap - g, 300, -100, 100, -100, 100)))
+    body = plate.union(lip)
+
+    # Проушины на ось: от оси до пластины
     py, pz = p.pivot
-    ax = p.open_len / 2 - p.arm_from_end
-    slot_w = p.arm_w + 2 * 1.0
-    body = body.cut(_xz_box(ax - slot_w / 2, ax + slot_w / 2,
-                            pz - p.arm_h / 2 - 20, pz + p.arm_h / 2 + 1.5,
-                            -p.cup_depth - p.wall - 1, -p.cup_depth + 1))
+    for i, (x0, x1) in enumerate(p.lugs_x):
+        pts = _circle_pts((py, pz), p.lug_r + g) + [
+            (fy - p.paddle_t + 0.5, pz + 3.0 + g), (fy - p.paddle_t + 0.5, pz - 12 - g),
+        ]
+        if i == 1:   # у личинки — рычаг на тягу
+            pts += _circle_pts((py - p.lever_len, pz - 2), p.lug_r + g)
+        body = body.union(_yz_hull(pts, x0 - g, x1 + g))
 
-    # Отверстия под штифт оси в торцах чашки (посадка с натягом)
-    pin = (cq.Workplane("YZ").circle(p.pin_d / 2)
-           .extrude(p.open_len + 2 * p.wall + 4)
-           .translate((-(p.open_len / 2 + p.wall + 2), py, pz)))
-    body = body.cut(pin)
-
-    # Личинка замка: отверстие в накладке и трубка-направляющая
-    if p.key:
-        tube = (cq.Workplane("XZ").circle(p.key_tube_d / 2)
-                .extrude(p.key_tube_len)  # XZ выдавливается в -Y
-                .translate((p.key_x, 0, 0)))
-        body = body.union(tube)
-        hole = (cq.Workplane("XZ").circle(p.key_hole_d / 2)
-                .extrude(p.key_tube_len + p.proud + 2)
-                .translate((p.key_x, p.proud + 1, 0)))
-        body = body.cut(hole)
-
-    # Бобышки крепления с отверстиями под термовставки
-    for bx in p.boss_xs:
-        boss = (cq.Workplane("XZ").circle(p.boss_d / 2).extrude(p.boss_len)
-                .translate((bx, 0, 0)))
-        body = body.union(boss)
-        ins = (cq.Workplane("XZ").circle(p.insert_d / 2).extrude(p.insert_depth)
-               .translate((bx, -p.boss_len + p.insert_depth, 0)))
-        body = body.cut(ins)
-
+    if grow == 0:
+        (x0, _), (_, x1) = p.lugs_x
+        pin = (cq.Workplane("YZ", origin=(x0 - 1, 0, 0)).center(py, pz)
+               .circle(p.pin_d / 2 + p.pin_clear).extrude(x1 - x0 + 2))
+        rod = (cq.Workplane("YZ", origin=(p.lugs_x[1][0] - 1, 0, 0)).center(py - p.lever_len, pz - 2)
+               .circle(p.rod_hole_d / 2).extrude(p.lug_t + 2))
+        body = body.cut(pin).cut(rod)
     return body
 
 
-def flap(p: P = P(), angle: float = 0.0) -> cq.Workplane:
-    """Лопатка в закрытом положении; angle>0 — открыта на этот угол."""
+def _rotate(shape, p: P, angle):
+    """Положительный угол выводит низ лопатки наружу (+Y)."""
     py, pz = p.pivot
-    xl = p.open_len / 2 - p.gap
-    zb = -p.open_h / 2 + p.finger_gap      # нижний край лопатки
+    return shape.rotate((0, py, pz), (1, py, pz), angle)
 
-    # Втулка оси на всю длину
-    barrel = (cq.Workplane("YZ").circle(p.barrel_r).extrude(2 * xl)
-              .translate((-xl, py, pz)))
 
-    # Пластина: лицо заподлицо с накладкой
-    plate = _xz_box(-xl, xl, zb, pz, p.proud - p.flap_t, p.proud)
-    plate = (plate.edges("|Y").edges("<Z").fillet(p.open_r_bot - p.gap)
-             .faces(">Y").edges("not >Z").fillet(1.2))
+def flap(p: P = P(), angle: float = 0.0) -> cq.Workplane:
+    body = _paddle(p)
+    return _rotate(body, p, angle) if angle else body
 
-    # Загиб низа внутрь — за него цепляются пальцы
-    lip_y0, lip_y1 = p.proud - p.flap_t - p.lip_depth, p.proud - p.flap_t + 0.01
-    lip = (_xz_box(-xl, xl, zb, pz, lip_y0, lip_y1)
-           .edges("|Y").edges("<Z").fillet(p.open_r_bot - p.gap)
-           .intersect(_xz_box(-xl - 1, xl + 1, zb - 1, zb + p.lip_t, lip_y0 - 1, lip_y1 + 1)))
 
-    body = barrel.union(plate).union(lip)
+@lru_cache(maxsize=None)
+def _sweep(p: P):
+    """Объём, который заметает раздутая на зазор лопатка на всём ходе."""
+    base = _paddle(p, grow=p.gap)
+    env = base
+    steps = int(np.ceil(p.swing_deg / 2.0))
+    for i in range(1, steps + 1):
+        env = env.union(_rotate(base, p, p.swing_deg * i / steps))
+    return env
 
-    # Рычаг на тягу: уходит от оси внутрь двери через прорезь в чашке
-    ax = p.open_len / 2 - p.arm_from_end
-    arm = (_xz_box(ax - p.arm_w / 2, ax + p.arm_w / 2,
-                   pz - p.arm_h / 2, pz + p.arm_h / 2,
-                   py - p.arm_reach, py)
-           .edges("|X").edges("<Y").fillet(p.arm_h / 2 - 0.01))
-    rod = (cq.Workplane("YZ").circle(p.rod_hole_d / 2).extrude(p.arm_w + 2)
-           .translate((ax - p.arm_w / 2 - 1, py - p.arm_reach + p.arm_h / 2, pz)))
-    body = body.union(arm).cut(rod)
 
-    # Отверстие под штифт (свободная посадка)
-    pin = (cq.Workplane("YZ").circle(p.pin_d / 2 + p.pin_clear)
-           .extrude(2 * xl + 2).translate((-xl - 1, py, pz)))
+# ---------- корпус ----------
+
+def bezel(p: P = P()) -> cq.Workplane:
+    face = _prism(p, "outer", 0, p.proud)
+    face = face.faces(">Y").edges().fillet(p.front_fillet)
+
+    # Проём: сквозь лицо до дна мелкой части
+    body = face.cut(_prism(p, "inner", p.floor_y, p.proud + 1))
+    inner = np.array(_contour(p, "inner"))
+    (ox0, oz0), (ox1, oz1) = inner.min(0), inner.max(0)
+    try:
+        sel = cq.selectors.BoxSelector((ox0 - 1, p.proud - 0.1, oz0 - 1), (ox1 + 1, p.proud + 0.1, oz1 + 1))
+        body = body.edges(sel).fillet(p.open_fillet)
+    except Exception:
+        pass   # скругление кромки проёма — косметика, без него деталь та же
+
+    # Глубокий карман за обшивкой
+    cup = (_prism(p, "inner", -p.cup_depth - p.cup_wall, p.floor_y + 0.01, offset=p.cup_clear + p.cup_wall)
+           .intersect(_box(p.deep_from_x - p.cup_wall, 300, -100, 100, -100, 100)))
+    body = body.union(cup)
+    cav = (_prism(p, "inner", -p.cup_depth, p.floor_y + 0.5, offset=p.cup_clear)
+           .intersect(_box(p.deep_from_x, 300, -100, 100, -100, 100)))
+    body = body.cut(cav)
+
+    # Личинка: отверстие и трубка-направляющая
+    kx, kz = p.key_xz
+    if p.key:
+        tube = _xz_wp(0).center(kx, kz).circle(p.key_d / 2 + p.key_tube_wall).extrude(p.key_tube_len)
+        body = body.union(tube)
+        hole = (_xz_wp(p.proud + 1).center(kx, kz).circle(p.key_d / 2)
+                .extrude(p.proud + p.key_tube_len + 2))
+        body = body.cut(hole)
+
+    # Зазоры под ход лопатки: вырезаем всё, что она заметает
+    body = body.cut(_sweep(p))
+
+    # Кронштейны оси: от задней стенки кармана до оси
+    py, pz = p.pivot
+    for x0, x1 in p.brackets_x:
+        pts = _circle_pts((py, pz), p.bracket_r) + [
+            (-p.cup_depth - p.cup_wall, pz + p.bracket_r), (-p.cup_depth - p.cup_wall, pz - 8),
+        ]
+        body = body.union(_yz_hull(pts, x0, x1))
+    # Упоры: рёбра от задней стенки до загиба лопатки, держат её закрытой
+    lip_back = p.face_y - p.lip_depth - p.stop_clear
+    for sx in p.stop_x:
+        z = p.split_z(sx)
+        body = body.union(_box(sx - p.stop_w / 2, sx + p.stop_w / 2, -p.cup_depth - 0.5, lip_back,
+                               z - 2.0, z + p.lip_t))
+
+    # Отверстие под штифт: через торец кармана и оба кронштейна (штифт вставляется слева)
+    _, (_, bx1) = p.brackets_x
+    start = p.deep_from_x - p.cup_wall - 5
+    pin = (cq.Workplane("YZ", origin=(start, 0, 0)).center(py, pz)
+           .circle(p.pin_d / 2).extrude(bx1 - start))
     body = body.cut(pin)
 
-    if angle:
-        # Положительный угол выводит низ лопатки наружу (+Y)
-        body = body.rotate((0, py, pz), (1, py, pz), angle)
+    # Бобышки крепления
+    for bx, bz in p.bosses:
+        boss = _xz_wp(0).center(bx, bz).circle(p.boss_d / 2).extrude(p.boss_len)
+        body = body.union(boss)
+        ins = (_xz_wp(-p.boss_len + p.insert_depth).center(bx, bz).circle(p.insert_d / 2)
+               .extrude(p.insert_depth + 1))
+        body = body.cut(ins)
+
     return body
 
 
