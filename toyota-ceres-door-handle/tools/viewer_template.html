@@ -1,0 +1,220 @@
+<title>Ручка Corolla Ceres</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one tall stage with the part, controls docked under it, spec sheet below like a drawing title block */
+:root {
+  --bg: #eef0f2;
+  --panel: #ffffff;
+  --fg: #1b1f24;
+  --muted: #5d6670;
+  --line: #d3d8de;
+  --accent: #c8102e;      /* Toyota-era red, used only for the active control */
+  --stage: #dfe3e8;
+  --font-display: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --font-body: "Barlow", system-ui, sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14171b; --panel: #1c2026; --fg: #e8ebee; --muted: #9aa3ad; --line: #2e343c;
+    --accent: #ff4d5e; --stage: #0f1215; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14171b; --panel: #1c2026; --fg: #e8ebee; --muted: #9aa3ad; --line: #2e343c;
+  --accent: #ff4d5e; --stage: #0f1215; color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.5;
+}
+.wrap {
+  max-width: 980px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 40px;
+  display: grid; gap: 18px;
+}
+header h1 {
+  font-family: var(--font-display); font-weight: 600; font-size: 2rem; letter-spacing: 0.01em;
+  margin: 0; line-height: 1.1; text-wrap: balance;
+}
+header p { margin: 4px 0 0; color: var(--muted); max-width: 65ch; }
+.eyebrow {
+  font-family: var(--font-data); font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+}
+.stage {
+  position: relative; background: var(--stage); border: 1px solid var(--line); border-radius: 6px;
+  aspect-ratio: 16 / 10; max-width: 100%; overflow: hidden;
+}
+.stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.stage .hint {
+  position: absolute; left: 10px; bottom: 8px; font-family: var(--font-data); font-size: 0.72rem; color: var(--muted);
+  pointer-events: none;
+}
+.controls { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.seg button {
+  font: 500 0.9rem var(--font-body); color: var(--fg); background: var(--panel); border: 0; padding: 7px 12px; cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.seg button:focus-visible, input[type=range]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.angle { display: flex; align-items: center; gap: 10px; flex: 1 1 220px; min-width: 0; }
+.angle label { font-size: 0.9rem; white-space: nowrap; }
+.angle input { flex: 1; min-width: 0; accent-color: var(--accent); }
+.angle output { font-family: var(--font-data); font-variant-numeric: tabular-nums; width: 3.5ch; text-align: right; }
+.sheet { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+.sheet section { min-width: 0; }
+.sheet h2 { font-family: var(--font-display); font-weight: 600; font-size: 1.25rem; margin: 0 0 6px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+td { padding: 5px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.v { font-family: var(--font-data); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; padding-left: 12px; }
+ol, ul { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; }
+.note { color: var(--muted); font-size: 0.85rem; }
+body.capture header, body.capture .controls, body.capture .sheet, body.capture .hint { display: none; }
+body.capture .wrap { padding: 0; max-width: none; }
+body.capture .stage { border: 0; border-radius: 0; }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500&family=Barlow+Condensed:wght@600&family=JetBrains+Mono&display=swap">
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Toyota Corolla Ceres · AE100/AE101 · 1996 · наружная ручка двери</div>
+    <h1>Наружная ручка двери: черновик модели</h1>
+    <p>Тип «лопатка»: тянешь снизу вверх, и она поворачивается на оси у верхнего края. Размеры пока оценочные. Перед печатью их надо сверить с оригиналом.</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <canvas id="c" aria-label="3D-модель ручки"></canvas>
+    <div class="hint">тяни — вращать · щипок/колесо — масштаб</div>
+  </div>
+
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Дверь">
+      <button id="v-key" aria-pressed="true">Передняя, с личинкой</button>
+      <button id="v-plain" aria-pressed="false">Без личинки</button>
+    </div>
+    <div class="seg" role="group" aria-label="Сторона">
+      <button id="s-right" aria-pressed="true">Правая (водитель)</button>
+      <button id="s-left" aria-pressed="false">Левая</button>
+    </div>
+    <div class="angle">
+      <label for="ang">Лопатка</label>
+      <input id="ang" type="range" min="0" max="__SWING__" step="1" value="0">
+      <output id="ang-out">0°</output>
+    </div>
+  </div>
+
+  <div class="sheet">
+    <section>
+      <h2>Основные размеры (оценка)</h2>
+      <table>__DIMS__</table>
+    </section>
+    <section>
+      <h2>Что нужно замерить на оригинале</h2>
+      <ol>
+        <li>Длина и высота накладки снаружи</li>
+        <li>Размер выреза в обшивке двери (снять ручку)</li>
+        <li>Расстояние между крепёжными шпильками или болтами и их диаметр</li>
+        <li>Положение оси лопатки и диаметр штифта</li>
+        <li>Рычаг тяги: вылет от оси и диаметр отверстия под клипсу</li>
+        <li>Диаметр личинки замка</li>
+      </ol>
+      <p class="note">Тёмная деталь — корпус-накладка. Светлая — подвижная лопатка с рычагом на тягу замка. Ось — стальной штифт Ø4 мм.</p>
+    </section>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
+
+const DATA = __DATA__;   // {variant: {bezel: base64 STL, flap: base64 STL}}
+const PIVOT = __PIVOT__; // [y, z] оси лопатки, мм
+
+const canvas = document.getElementById("c");
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+// Модель в мм: X вдоль машины, Y наружу из двери, Z вверх
+const camera = new THREE.PerspectiveCamera(30, 1.6, 1, 5000);
+camera.up.set(0, 0, 1);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x50555c, 1.6));
+const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(150, 260, 220); scene.add(key);
+const rim = new THREE.DirectionalLight(0xffffff, 0.6); rim.position.set(-200, -150, 80); scene.add(rim);
+
+const loader = new STLLoader();
+function geom(b64) {
+  const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer;
+  const g = loader.parse(bin); g.computeVertexNormals(); return g;
+}
+const matBezel = new THREE.MeshStandardMaterial({ color: 0x2b2f35, roughness: 0.55, metalness: 0.05 });
+const matFlap = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.4, metalness: 0.15 });
+
+const root = new THREE.Group(); scene.add(root);
+const flapPivot = new THREE.Group();             // вращается вокруг оси лопатки
+flapPivot.position.set(0, PIVOT[0], PIVOT[1]);
+const meshes = {};
+for (const [name, parts] of Object.entries(DATA)) {
+  const bezel = new THREE.Mesh(geom(parts.bezel), matBezel);
+  const flap = new THREE.Mesh(geom(parts.flap), matFlap);
+  flap.position.set(0, -PIVOT[0], -PIVOT[1]);
+  meshes[name] = { bezel, flap };
+}
+root.add(flapPivot);
+
+const state = { variant: "key", side: "right", angle: 0 };
+function apply() {
+  for (const [name, m] of Object.entries(meshes)) {
+    const on = name === state.variant;
+    if (on) { root.add(m.bezel); flapPivot.add(m.flap); } else { root.remove(m.bezel); flapPivot.remove(m.flap); }
+  }
+  root.scale.x = state.side === "right" ? 1 : -1;
+  flapPivot.rotation.x = THREE.MathUtils.degToRad(state.angle);
+  for (const [id, val] of [["v-key", "key"], ["v-plain", "plain"]])
+    document.getElementById(id).setAttribute("aria-pressed", state.variant === val);
+  for (const [id, val] of [["s-left", "left"], ["s-right", "right"]])
+    document.getElementById(id).setAttribute("aria-pressed", state.side === val);
+  document.getElementById("ang-out").textContent = state.angle + "°";
+}
+document.getElementById("v-key").onclick = () => { state.variant = "key"; apply(); };
+document.getElementById("v-plain").onclick = () => { state.variant = "plain"; apply(); };
+document.getElementById("s-left").onclick = () => { state.side = "left"; apply(); };
+document.getElementById("s-right").onclick = () => { state.side = "right"; apply(); };
+document.getElementById("ang").oninput = e => { state.angle = +e.target.value; apply(); };
+
+function view(az, el, dist = 330) {
+  const a = THREE.MathUtils.degToRad(az), e = THREE.MathUtils.degToRad(el);
+  const cx = 15 * root.scale.x;   // центр накладки сдвинут к личинке; у зеркальной — в другую сторону
+  camera.position.set(cx + dist * Math.cos(e) * Math.cos(a), dist * Math.cos(e) * Math.sin(a), dist * Math.sin(e));
+  controls.target.set(cx, -8, 0); controls.update();
+}
+view(62, 20);
+
+function resize() {
+  const r = stage.getBoundingClientRect();
+  renderer.setSize(r.width, r.height, false);
+  camera.aspect = r.width / r.height; camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(stage); resize();
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+apply();
+
+// Для съёмки рендеров из скрипта
+window.__shot = (opts) => {
+  Object.assign(state, opts.state || {}); apply();
+  view(opts.az, opts.el, opts.dist); resize(); renderer.render(scene, camera);
+};
+window.__ready = true;
+</script>

@@ -1,0 +1,7 @@
+[
+ {"file": "01_front_closed.png", "state": {"variant": "key", "side": "right", "angle": 0}, "az": 62, "el": 18, "dist": 330},
+ {"file": "02_front_open.png", "state": {"variant": "key", "side": "right", "angle": 25}, "az": 40, "el": 8, "dist": 330},
+ {"file": "03_back.png", "state": {"variant": "key", "side": "right", "angle": 0}, "az": -125, "el": 22, "dist": 330},
+ {"file": "04_side_open.png", "state": {"variant": "key", "side": "right", "angle": 25}, "az": 0, "el": 0, "dist": 220},
+ {"file": "05_plain_left.png", "state": {"variant": "plain", "side": "left", "angle": 0}, "az": 118, "el": 18, "dist": 330}
+]
